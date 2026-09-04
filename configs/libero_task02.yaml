@@ -1,0 +1,17 @@
+suite: libero_spatial
+task_id: 2
+
+task_name: pick_up_the_black_bowl_from_table_center_and_place_it_on_the_plate
+
+camera:
+  names:
+    - agentview
+    - robot0_eye_in_hand
+  height: 128
+  width: 128
+
+collection:
+  num_replay_demos: 10
+  sample_stride: 5
+  horizon: 10
+  num_candidates: 8

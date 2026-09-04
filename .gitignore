@@ -1,0 +1,98 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+ENV/
+env/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# MacOS
+.DS_Store
+
+# MuJoCo logs
+MUJOCO_LOG.TXT
+
+# Outputs and experimental data
+outputs/
+outputs_back/
+*.mp4
+*.avi
+*.gif
+*.png
+*.jpg
+*.jpeg
+!outputs/dp_vla_architecture.pdf
+!outputs/dp_vla_architecture.txt
+!outputs/draw_architecture.py
+
+# NPZ/NPY files (large binary data)
+*.npz
+*.npy
+
+# Exclude key statistics files
+!normalization_v1.json
+!contact_events_v1.npz
+!physics_tokens_demo0.npz
+!multi_task_results.json
+!multitask_p3p4_results.json
+
+# Model checkpoints
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+checkpoints/
+*.tar.gz
+*.zip
+
+# Third-party (managed separately)
+third_party/LIBERO/
+third_party/starVLA/
+
+# Data directories
+data/
+datasets/
+
+# Temporary files
+*.tmp
+*.log
+*.cache
+
+# Archives
+*.tar
+*.gz
+*.bz2
+*.xz
+
+# Claude Code
+.claude/settings.local.json
+.claude/transcripts/
