@@ -8,23 +8,64 @@ phyvla extracts, replays, and visualizes physics states from LIBERO demonstratio
 
 **Current Status**: P0-P4 complete (7/7 tasks validated), P5 in progress
 
+### What is phyvla?
+
+phyvla is a research toolkit for integrating physics understanding into Vision-Language-Action (VLA) models. It addresses a key limitation in current VLA approaches: **they lack explicit physics awareness**. By extracting and encoding physical states (contacts, forces, object properties, dynamics gradients) into structured tokens, phyvla enables VLA models to make more physically-grounded action predictions.
+
+### Key Features
+
+- 🔍 **Zero-drift Physics Extraction**: Replay LIBERO demonstrations with perfect state restoration
+- 🧠 **Physical Tokenizer**: Encode physics into `[B, 7+N, 256]` structured tokens (7 base + N objects)
+- ⚡ **GPU-accelerated Rollout**: mujoco_warp enables K=8×H=30 rollout in 0.3s (87× faster than MJX)
+- 📊 **Gradient-based Refinement**: Parallel finite difference for action sensitivity analysis
+- 🤖 **VLA Integration**: Inject physics tokens into StarVLA (Qwen2.5-VL) for physics-aware control
+- ✅ **Validated**: 7/7 libero_spatial tasks pass all metrics (robot RMSE, contact F1, role accuracy)
+
+### Why Three Environments?
+
+Different phases require incompatible dependencies:
+
+1. **libero_replay**: Legacy PyTorch 1.11 + CUDA 11.3 (matches robosuite/LIBERO ecosystem)
+2. **phyvla-p2**: JAX + CUDA 12 (for differentiable simulation, conflicts with old PyTorch)
+3. **starVLA**: Modern PyTorch 2.6 + Flash Attention (VLA training, conflicts with JAX)
+
 ## Quick Start
+
+### Prerequisites
+
+- **OS**: Linux (Ubuntu 20.04+)
+- **GPU**: NVIDIA GPU with CUDA support (RTX 3090 or better recommended)
+- **Conda**: Anaconda or Miniconda installed
+- **Disk**: 10 GB+ free space
 
 ### Environment Setup
 
+The project requires **three separate conda environments** for different development phases:
+
+| Environment | Python | Purpose | Key Dependencies |
+|-------------|--------|---------|------------------|
+| **libero_replay** | 3.8.13 | P0-P1: Physics extraction & tokenizer | PyTorch 1.11, robosuite 1.4, MuJoCo 3.2 |
+| **phyvla-p2** | 3.11.15 | P2-P4: Differentiable rollout & gradients | JAX 0.10, mujoco_warp 3.10 |
+| **starVLA** | 3.10.19 | P5: VLA training & inference | PyTorch 2.6, Flash Attention 2.7 |
+
 **Automated setup (recommended):**
 ```bash
-# Clone repository
+# 1. Clone repository
 git clone <your-repo-url> phyvla
 cd phyvla
 
-# Create all three environments automatically
+# 2. Create all three environments automatically
 bash setup_envs.sh
 
-# Install LIBERO
+# 3. Install LIBERO
 conda activate libero_replay
 cd third_party/LIBERO
 pip install -e .
+cd ../..
+
+# 4. Download LIBERO datasets
+# Follow instructions at: https://github.com/Lifelong-Robot-Learning/LIBERO
+# Datasets should be placed at: ~/.libero/datasets/
 ```
 
 **Manual setup:**
@@ -35,32 +76,102 @@ conda env create -f envs/phyvla-p2_env.yml
 conda env create -f envs/starVLA_env.yml
 ```
 
-See **[ENVIRONMENT_SETUP.md](ENVIRONMENT_SETUP.md)** for detailed instructions, troubleshooting, and environment details.
+**Verify installation:**
+```bash
+# Test libero_replay
+conda activate libero_replay
+python -c "import torch; import mujoco; import robosuite; print('✓ libero_replay OK')"
 
-### Extract Physics Data
+# Test phyvla-p2
+conda activate phyvla-p2
+python -c "import jax; import mujoco_warp as mjw; print('✓ phyvla-p2 OK')"
+
+# Test starVLA (optional, for P5)
+conda activate starVLA
+python -c "import torch; import flash_attn; print('✓ starVLA OK')"
+```
+
+See **[ENVIRONMENT_SETUP.md](ENVIRONMENT_SETUP.md)** for detailed instructions, troubleshooting, and manual installation steps.
+
+---
+
+## Usage Workflow
+
+### Phase 0-1: Physics Extraction & Tokenizer Training
 
 ```bash
 conda activate libero_replay
 
-# Replay demonstration and visualize contact forces
+# Step 1: Replay demonstration and visualize contact forces
 python scripts/visualize_contact_forces.py \
     --suite libero_spatial --task-id 2 --demo-index 0 \
     --output outputs/physics/task02_demo00_contact_force.mp4
 
-# Extract physics features to NPZ
+# Step 2: Extract physics features to NPZ
 python scripts/extract_task02_physics_smoke.py \
     --output outputs/physics/task02_demo00_step6.npz
-```
 
-### Train Physical Tokenizer
-
-```bash
-# Run full P1 pipeline (single task)
+# Step 3: Run full P1 pipeline (compute normalization + train tokenizer)
 python scripts/run_task_pipeline.py --task-id 2 --py-libero
 
-# Run multi-task pipeline (7 tasks)
+# Step 4: Run multi-task pipeline (7 tasks)
 python scripts/run_multi_task_pipeline.py
 ```
+
+**Expected outputs:**
+- `outputs/physics/`: Contact force videos and NPZ files
+- `outputs_back/normalization_v1.json`: Normalization statistics
+- `outputs_back/contact_events_v1.npz`: Contact event features
+- `outputs_back/multi_task_results.json`: Validation metrics (7/7 tasks)
+
+### Phase 2-4: Differentiable Rollout & Gradient Refinement
+
+```bash
+conda activate phyvla-p2
+
+# Step 1: Test mujoco_warp rollout (K=8 candidates, H=30 steps)
+python scripts/test_p3_warp_rollout.py --task-id 2
+
+# Step 2: Demo candidate ranking
+python scripts/demo_candidate_ranking.py --task-id 2
+
+# Step 3: Demo gradient-based action refinement
+python scripts/demo_gradient_refinement.py --task-id 2
+
+# Step 4: Run multi-task P3-P4 validation
+python scripts/run_multitask_p3p4.py
+```
+
+**Expected outputs:**
+- Rollout visualizations with physics overlays
+- Candidate ranking comparisons
+- Gradient refinement loss curves
+
+### Phase 5: VLA Integration (In Progress)
+
+```bash
+conda activate starVLA
+
+# Change to StarVLA directory (required for config paths)
+cd /home/<username>/workspace/starVLA
+
+# Step 1: Export VLA baseline actions
+python /path/to/phyvla/scripts/export_vla_actions.py \
+    --suite libero_spatial --task-id 2 --demo-index 0
+
+# Step 2: Pre-cache VLM hidden states (saves 95% training time)
+python /path/to/phyvla/scripts/train_p5_projector.py \
+    --task-id 2 --cache-only
+
+# Step 3: Train PhysicsTokenProjector
+python /path/to/phyvla/scripts/train_p5_projector.py \
+    --task-id 2 --epochs 200 --lr 1e-4 --batch-size 16
+```
+
+**Note**: P5 requires StarVLA checkpoint at:
+`/home/<username>/workspace/starVLA/playground/Pretrained_models/Qwen2.5-VL-GR00T-LIBERO-4in1/`
+
+See **[PROJECT_ARCHIVE.md](PROJECT_ARCHIVE.md)** for detailed P5 execution plan.
 
 ## Architecture
 
@@ -184,33 +295,95 @@ phyvla/
 
 ## Roadmap
 
-- [x] **P0**: Physics data extraction (zero-drift replay)
-- [x] **P1**: Physical Tokenizer ([B,23,256], 7/7 tasks validated)
-- [x] **P2**: MuJoCo → MJX parity (RMSE=5.76e-8m)
-- [x] **P3**: mujoco_warp rollout (0.3s for K=8×H=30)
-- [x] **P4**: FD gradient refinement (loss ↓0.64%)
-- [ ] **P5**: StarVLA physics token injection (in progress)
-- [ ] **P6**: Sim-to-real deployment
-- [ ] **P7**: End-to-end differentiable training
-- [ ] **P8**: Multi-task scaling & dexterous manipulation
+### Completed Phases
+
+- [x] **P0: Physics Data Extraction** (2026-06)
+  - Zero-drift replay via qpos/qvel injection
+  - LiberoPhysicsAdapter: Extract robot/object/contact states
+  - Contact force validation (271 geoms, up to 16 contacts/frame)
+
+- [x] **P1: Physical Tokenizer** (2026-07)
+  - Architecture: `[B, 7+N, 256]` structured tokens
+  - Role-aware object encoding (TARGET/GOAL/DISTRACTOR/STATIC/GRIPPER)
+  - Multi-task validation: **7/7 libero_spatial tasks passed**
+  - Metrics: robot RMSE 0.0048-0.0077, contact F1 0.9773-0.9955
+
+- [x] **P2: MuJoCo → MJX Parity** (2026-07)
+  - State mapping validation: RMSE=5.76e-8m
+  - XLA OOM issue identified (271 geoms → 600+ MB per world)
+
+- [x] **P3: mujoco_warp Rollout** (2026-08)
+  - Production backend: CUDA Warp (no XLA)
+  - Performance: K=8×H=30 → **0.3s** (87× faster than MJX)
+  - Full LIBERO XML (271 geoms, no mesh reduction)
+
+- [x] **P4: Gradient-based Refinement** (2026-08)
+  - Parallel finite difference (K=1+2Hnu worlds)
+  - 5 iterations: loss 0.2357 → 0.2342 (↓0.64%)
+  - Note: wp.Tape autodiff returns zero for ctrl→xpos; FD is production method
+
+### Current Phase
+
+- [ ] **P5: StarVLA Physics Token Injection** (2026-09, in progress)
+  - `PhysicsTokenProjector`: Linear(256→2048) + position encoding (~1.6M params)
+  - `StarVLAPhysicsWrapper`: Inject z_proj into VLM hidden states
+  - VLM caching: Pre-compute frozen VLM outputs (saves 95% training time)
+  - Training: 200 epochs, physics sensitivity validation
+  - **Status**: Code ready, training pending (see PROJECT_ARCHIVE.md)
+
+### Future Phases
+
+- [ ] **P6: Sim-to-Real Deployment** (2026-10+)
+  - Domain randomization (mass ±30%, friction ±50%)
+  - Real robot deployment on Franka Panda
+  - Sim-to-real transfer validation
+
+- [ ] **P7: End-to-End Differentiable Training** (2026-11+)
+  - Backprop through physics (wp.Tape or Brax)
+  - Joint VLA + tokenizer training
+  - Physics-constrained loss functions
+
+- [ ] **P8: Multi-Task Scaling** (2027+)
+  - Scale to all 130 LIBERO tasks
+  - Dexterous manipulation (multi-finger grippers)
+  - Long-horizon task decomposition
 
 ## Citation
 
-If you use this codebase, please cite:
+If you use this codebase in your research, please cite:
 
 ```bibtex
 @misc{phyvla2026,
-  title={phyvla: Physics-guided Vision-Language-Action for Robot Manipulation},
+  title={phyvla: Differentiable Physics-guided Vision-Language-Action for Robot Manipulation},
   author={Your Name},
   year={2026},
-  howpublished={\url{https://github.com/yourusername/phyvla}}
+  howpublished={\url{https://github.com/yourusername/phyvla}},
+  note={Physics-enhanced VLA toolkit for the LIBERO benchmark}
 }
 ```
 
 ## License
 
-[Specify your license here]
+[MIT License / Apache-2.0 / GPL-3.0 - Specify your license here]
 
-## Contact
+## Acknowledgments
 
-[Your contact information]
+- **LIBERO**: Lifelong Robot Learning benchmark ([GitHub](https://github.com/Lifelong-Robot-Learning/LIBERO))
+- **robosuite**: Robot simulation framework ([GitHub](https://github.com/ARISE-Initiative/robosuite))
+- **MuJoCo**: Multi-Joint dynamics with Contact physics engine
+- **mujoco_warp**: GPU-accelerated MuJoCo with NVIDIA Warp ([GitHub](https://github.com/Farama-Foundation/mujoco_warp))
+- **StarVLA**: Vision-Language-Action model for robot control
+
+## Contact & Support
+
+- **Issues**: Please open an issue on GitHub for bug reports or feature requests
+- **Documentation**: See [FINAL_SUMMARY.md](FINAL_SUMMARY.md) for complete project documentation index
+- **Environment Setup**: See [ENVIRONMENT_SETUP.md](ENVIRONMENT_SETUP.md) for detailed installation guide
+- **Development Guide**: See [CLAUDE.md](CLAUDE.md) for development conventions
+
+## Related Projects
+
+- [LIBERO](https://github.com/Lifelong-Robot-Learning/LIBERO): Benchmark for lifelong robot learning
+- [robosuite](https://github.com/ARISE-Initiative/robosuite): Robot simulation framework
+- [mujoco_warp](https://github.com/Farama-Foundation/mujoco_warp): GPU-accelerated physics simulation
+- [Qwen2-VL](https://github.com/QwenLM/Qwen2-VL): Vision-language foundation model
