@@ -12,16 +12,30 @@ phyvla extracts, replays, and visualizes physics states from LIBERO demonstratio
 
 ### Environment Setup
 
+**Automated setup (recommended):**
 ```bash
-# Create libero_replay environment (P0-P1: data extraction & tokenizer training)
-conda create -n libero_replay python=3.8.13
+# Clone repository
+git clone <your-repo-url> phyvla
+cd phyvla
+
+# Create all three environments automatically
+bash setup_envs.sh
+
+# Install LIBERO
 conda activate libero_replay
 cd third_party/LIBERO
-pip install -r requirements.txt
-pip install torch==1.11.0+cu113 torchvision==0.12.0+cu113 torchaudio==0.11.0 \
-    --extra-index-url https://download.pytorch.org/whl/cu113
 pip install -e .
 ```
+
+**Manual setup:**
+```bash
+# Create from environment files
+conda env create -f envs/libero_replay_env.yml
+conda env create -f envs/phyvla-p2_env.yml
+conda env create -f envs/starVLA_env.yml
+```
+
+See **[ENVIRONMENT_SETUP.md](ENVIRONMENT_SETUP.md)** for detailed instructions, troubleshooting, and environment details.
 
 ### Extract Physics Data
 
@@ -144,19 +158,29 @@ phyvla/
 
 ## Documentation
 
+- **[ENVIRONMENT_SETUP.md](ENVIRONMENT_SETUP.md)**: Complete environment setup guide ⭐ **Start here for new installations**
 - **[CLAUDE.md](CLAUDE.md)**: Developer guide for Claude Code
+- **[README.md](README.md)**: This file - project overview & quick start
 - **[doc/plan.md](doc/plan.md)**: Complete technical roadmap (P0-P8)
 - **[physicsvla（仿真）.md](physicsvla（仿真）.md)**: Detailed design & training flow
 - **[PROJECT_ARCHIVE.md](PROJECT_ARCHIVE.md)**: Archive summary & P5+ plan
+- **[CLEANUP_PLAN.md](CLEANUP_PLAN.md)**: Repository cleanup guide
+- **[GIT_SETUP_SUMMARY.md](GIT_SETUP_SUMMARY.md)**: Git workflow & operations
 
 ## Technology Stack
 
-| Component | Solution | Version |
-|-----------|----------|---------|
-| Physics backend | mujoco_warp | 3.10.0.3 |
-| VLA base model | StarVLA (Qwen2.5-VL-GR00T) | LIBERO-4in1 |
-| Gradient method | Parallel finite difference | K=1+2Hnu worlds |
-| Simulation env | LIBERO + robosuite | 1.4.x |
+| Component | Solution | Version | Environment |
+|-----------|----------|---------|-------------|
+| Physics backend (P0-P1) | MuJoCo + robosuite | 3.2.3 / 1.4.x | libero_replay |
+| Physics backend (P3-P4) | mujoco_warp | 3.10.0.3 | phyvla-p2 |
+| VLA base model | StarVLA (Qwen2.5-VL-GR00T) | LIBERO-4in1 | starVLA |
+| ML framework (P0-P1) | PyTorch + CUDA 11.3 | 1.11.0 | libero_replay |
+| ML framework (P2-P4) | JAX + CUDA 12 | 0.10.2 | phyvla-p2 |
+| ML framework (P5) | PyTorch 2.6 + Flash Attn | 2.6 / 2.7.4 | starVLA |
+| Gradient method | Parallel finite difference | K=1+2Hnu worlds | phyvla-p2 |
+| Simulation env | LIBERO benchmark | - | All |
+
+**Three environments**: See [ENVIRONMENT_SETUP.md](ENVIRONMENT_SETUP.md) for setup details.
 
 ## Roadmap
 
