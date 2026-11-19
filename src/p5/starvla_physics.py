@@ -27,8 +27,8 @@ import torch.nn as nn
 
 # ── 添加 StarVLA 第三方代码到 sys.path ──────────────────────────────────────
 _PHYVLA_ROOT  = Path(__file__).resolve().parents[2]
-_STARVLA_ROOT = _PHYVLA_ROOT / "third_party" / "starVLA"
-_STARVLA_WS   = Path("/home/jiangnan-luxitech/workspace/starVLA")  # 权重/基底模型路径
+_STARVLA_ROOT = _PHYVLA_ROOT / "thirdparty" / "starVLA"
+_STARVLA_WS   = _STARVLA_ROOT  # Use local thirdparty directory
 
 for _p in [str(_STARVLA_ROOT), str(_STARVLA_WS)]:
     if _p not in sys.path:
@@ -104,7 +104,7 @@ class StarVLAPhysicsWrapper(nn.Module):
     """
 
     # 默认配置（与 StarVLA LIBERO-4in1 checkpoint 对齐）
-    DEFAULT_VLA_HIDDEN  = 2048
+    DEFAULT_VLA_HIDDEN  = 2560  # Qwen-VL hidden dimension
     DEFAULT_PHY_DIM     = 256
     DEFAULT_NUM_PHY_TOK = 23
 
@@ -192,6 +192,23 @@ class StarVLAPhysicsWrapper(nn.Module):
         Returns:
             normalized_actions: np.ndarray [B, action_horizon, 7]
         """
+        if z_phy is None:
+            result = self.vla.predict_action(examples=examples)
+            return np.asarray(result["normalized_actions"])
+
+        # Match train_p5_projector.py: first horizon projected physics slots.
+        # Legacy OFT training did not fuse image hidden states into these queries.
+        if type(self.vla.action_model).__name__ == "L1RegressionActionHead":
+            parameter = next(self.phy_projector.parameters())
+            z_phy = torch.as_tensor(z_phy, device=parameter.device, dtype=parameter.dtype)
+            expected = (len(examples), self.phy_projector.pos_embed.shape[1], 256)
+            if tuple(z_phy.shape) != expected or not torch.isfinite(z_phy).all():
+                raise ValueError(f"Expected finite physics tokens {expected}")
+            queries = self.phy_projector(z_phy)[:, :self.action_horizon]
+            head_parameter = next(self.vla.action_model.parameters())
+            pred = self.vla.action_model.predict_action(queries.to(head_parameter.dtype))
+            return pred.float().cpu().numpy()
+
         state_raw = [ex.get("state") for ex in examples]
         state = None
         if state_raw[0] is not None:
@@ -224,6 +241,29 @@ class StarVLAPhysicsWrapper(nn.Module):
 
         return pred.detach().cpu().numpy()
 
+    @torch.inference_mode()
+    def predict_with_physics(
+        self,
+        obs: dict,
+        z_phy: torch.Tensor,
+    ) -> np.ndarray:
+        """便捷接口：物理增强推理（用于评估）。
+
+        Args:
+            obs: {
+                "image": list of PIL Images,
+                "lang": str,
+                "state": np.ndarray [7] (optional)
+            }
+            z_phy: [1, N_phy, 256] physics tokens
+
+        Returns:
+            actions: [action_horizon, 7]
+        """
+        examples = [obs]
+        actions = self.predict(examples, z_phy=z_phy)  # [1, horizon, 7]
+        return actions[0]  # [horizon, 7]
+
     # ── 训练前向 ─────────────────────────────────────────────────────────────
 
     def training_forward(
@@ -255,12 +295,19 @@ class StarVLAPhysicsWrapper(nn.Module):
 
         # flow-matching 训练前向（带 noise diffusion loss）
         with torch.autocast("cuda", dtype=torch.float32):
-            action_loss = self.vla.action_model(
-                last_hidden_aug, a_gt, state,
-                encoder_attention_mask=attn_mask_aug,
-            )
+            # Extract action queries from the augmented sequence
+            # Use the physics tokens as action queries (last N_phy tokens)
+            action_queries = last_hidden_aug[:, -z_phy.shape[1]:, :]  # [B, N_phy, H]
 
-        return {"action_loss": action_loss}
+            # Use only the first action_horizon tokens as queries
+            action_queries = action_queries[:, :self.action_horizon, :]  # [B, action_horizon, H]
+
+            # Use predict_action for L1RegressionActionHead
+            pred_actions = self.vla.action_model.predict_action(action_queries)
+            # Compute L1 loss
+            action_loss = torch.nn.functional.l1_loss(pred_actions, a_gt)
+
+        return {"action_loss": action_loss, "pred_actions": pred_actions}
 
     # ── 预缓存 VLM 隐状态 ────────────────────────────────────────────────────
 

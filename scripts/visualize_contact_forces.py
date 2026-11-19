@@ -557,20 +557,6 @@ def build_arrays(
         "ee_ang_vel": stack_path(records, ("robot", "ee_ang_vel")).astype(np.float32),
         "gripper_qpos": stack_path(records, ("robot", "gripper_qpos")).astype(np.float32),
         "gripper_qvel": stack_path(records, ("robot", "gripper_qvel")).astype(np.float32),
-        "bowl_position": stack_path(records, ("objects", "bowl", "position")).astype(np.float32),
-        "bowl_quat_xyzw": stack_path(records, ("objects", "bowl", "quat_xyzw")).astype(np.float32),
-        "bowl_linear_velocity": stack_path(records, ("objects", "bowl", "linear_velocity")).astype(np.float32),
-        "bowl_angular_velocity": stack_path(records, ("objects", "bowl", "angular_velocity")).astype(np.float32),
-        "bowl_mass": stack_path(records, ("objects", "bowl", "mass")).astype(np.float32),
-        "bowl_inertia": stack_path(records, ("objects", "bowl", "inertia")).astype(np.float32),
-        "bowl_friction": stack_path(records, ("objects", "bowl", "friction")).astype(np.float32),
-        "plate_position": stack_path(records, ("objects", "plate", "position")).astype(np.float32),
-        "plate_quat_xyzw": stack_path(records, ("objects", "plate", "quat_xyzw")).astype(np.float32),
-        "plate_linear_velocity": stack_path(records, ("objects", "plate", "linear_velocity")).astype(np.float32),
-        "plate_angular_velocity": stack_path(records, ("objects", "plate", "angular_velocity")).astype(np.float32),
-        "plate_mass": stack_path(records, ("objects", "plate", "mass")).astype(np.float32),
-        "plate_inertia": stack_path(records, ("objects", "plate", "inertia")).astype(np.float32),
-        "plate_friction": stack_path(records, ("objects", "plate", "friction")).astype(np.float32),
         "contacts": stack_path(records, ("contacts",)).astype(np.float32),
         "contact_mask": stack_path(records, ("contact_mask",)).astype(np.float32),
         "contact_count": stack_path(records, ("contact_count",)).astype(np.int32),
@@ -583,6 +569,15 @@ def build_arrays(
         "drawn_contact_count": np.asarray(drawn_counts, dtype=np.int32),
         "displayed_max_force": np.asarray(displayed_max_forces, dtype=np.float32),
     }
+
+    # Dynamically add object arrays based on what's in the first record
+    if records and "objects" in records[0]:
+        object_keys = records[0]["objects"].keys()
+        for obj_key in object_keys:
+            for field in ["position", "quat_xyzw", "linear_velocity", "angular_velocity",
+                         "mass", "inertia", "friction"]:
+                array_key = f"{obj_key}_{field}"
+                arrays[array_key] = stack_path(records, ("objects", obj_key, field)).astype(np.float32)
 
     for name, array in arrays.items():
         finite_or_raise(name, array)
@@ -623,11 +618,20 @@ def build_summary(
     projection_mask = arrays["contact_projection_mask"] > 0
     active_contacts = arrays["contact_mask"].sum(axis=1)
     raw_contact_count = arrays["contact_count"]
-    bowl_to_plate = np.linalg.norm(
-        arrays["bowl_position"] - arrays["plate_position"],
-        axis=-1,
-    )
-    bowl_z = arrays["bowl_position"][:, 2]
+
+    # Compute inter-object distance if we have exactly 2 objects (backward compatibility)
+    object_position_keys = [k for k in arrays.keys() if k.endswith("_position")]
+    if len(object_position_keys) >= 2:
+        obj1_key = object_position_keys[0]
+        obj2_key = object_position_keys[1]
+        inter_object_dist = np.linalg.norm(
+            arrays[obj1_key] - arrays[obj2_key],
+            axis=-1,
+        )
+        first_obj_z = arrays[obj1_key][:, 2]
+    else:
+        inter_object_dist = np.zeros(len(arrays["video_frame_index"]), dtype=np.float32)
+        first_obj_z = np.zeros(len(arrays["video_frame_index"]), dtype=np.float32)
 
     valid_contact_total = int(contact_mask.sum())
     projected_contact_total = int((projection_mask & contact_mask).sum())
@@ -689,10 +693,10 @@ def build_summary(
         },
         "resolved": adapter_description,
         "metrics": {
-            "bowl_z_min": float(bowl_z.min()),
-            "bowl_z_max": float(bowl_z.max()),
-            "bowl_plate_distance_start": float(bowl_to_plate[0]),
-            "bowl_plate_distance_end": float(bowl_to_plate[-1]),
+            "object_z_min": float(first_obj_z.min()),
+            "object_z_max": float(first_obj_z.max()),
+            "inter_object_distance_start": float(inter_object_dist[0]),
+            "inter_object_distance_end": float(inter_object_dist[-1]),
             "active_contacts_mean": float(active_contacts.mean()),
             "active_contacts_max": float(active_contacts.max()),
             "raw_contacts_min": int(raw_contact_count.min()),
@@ -788,10 +792,7 @@ def main() -> None:
 
         adapter = LiberoPhysicsAdapter(
             env=env,
-            object_patterns={
-                "bowl": ("black_bowl", "black bowl", "bowl"),
-                "plate": ("plate",),
-            },
+            object_patterns=None,  # Auto-detect objects in the scene
             max_contacts=args.max_contacts,
         )
         adapter_description = adapter.describe()

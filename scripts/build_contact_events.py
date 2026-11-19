@@ -46,15 +46,31 @@ def main() -> None:
     print("[events] loading", args.input)
     npz = np.load(str(args.input), allow_pickle=False)
 
-    bowl_plate_dist = np.linalg.norm(
-        npz["bowl_position"] - npz["plate_position"], axis=-1
-    )
+    # Dynamically find object position arrays
+    object_position_keys = [k for k in npz.keys() if k.endswith("_position")]
+
+    # Compute inter-object distance if we have at least 2 objects
+    if len(object_position_keys) >= 2:
+        obj1_key = object_position_keys[0]
+        obj2_key = object_position_keys[1]
+        inter_object_dist = np.linalg.norm(
+            npz[obj1_key] - npz[obj2_key], axis=-1
+        )
+        first_obj_position = npz[obj1_key]
+    elif len(object_position_keys) == 1:
+        # Single object case
+        inter_object_dist = np.zeros(len(npz["contacts"]), dtype=np.float32)
+        first_obj_position = npz[object_position_keys[0]]
+    else:
+        # No objects detected - use placeholder
+        inter_object_dist = np.zeros(len(npz["contacts"]), dtype=np.float32)
+        first_obj_position = np.zeros((len(npz["contacts"]), 3), dtype=np.float32)
 
     result = detect_contact_events(
         contacts=npz["contacts"],
         contact_mask=npz["contact_mask"],
-        bowl_position=npz["bowl_position"],
-        bowl_plate_dist=bowl_plate_dist,
+        bowl_position=first_obj_position,  # Use first object as reference
+        bowl_plate_dist=inter_object_dist,
         gripper_qpos=npz["gripper_qpos"],
         success=npz["success"],
     )

@@ -96,3 +96,7 @@ datasets/
 # Claude Code
 .claude/settings.local.json
 .claude/transcripts/
+
+# Dataset loader source is code, not generated datasets.
+!src/datasets/
+!src/datasets/*.py

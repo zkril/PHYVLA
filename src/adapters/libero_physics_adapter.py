@@ -126,16 +126,14 @@ class LiberoPhysicsAdapter:
         if self.max_contacts <= 0:
             raise ValueError("max_contacts must be positive")
 
-        if object_patterns is None:
-            object_patterns = {
-                "bowl": ("black_bowl", "black bowl", "bowl"),
-                "plate": ("plate",),
-            }
-
         self.body_names = self._all_names("body")
         self.geom_names = self._all_names("geom")
         self.site_names = self._all_names("site")
         self.joint_names = self._all_names("joint")
+
+        # Auto-detect objects if no patterns provided
+        if object_patterns is None:
+            object_patterns = self._auto_detect_objects()
 
         self.objects: Dict[str, ResolvedObject] = {}
         for key, patterns in object_patterns.items():
@@ -170,6 +168,41 @@ class LiberoPhysicsAdapter:
             self.site_names,
             ("gripper0_grip_site", "grip_site", "eef", "end_effector"),
         )
+
+    # ------------------------------------------------------------------
+    # Object detection
+    # ------------------------------------------------------------------
+
+    def _auto_detect_objects(self) -> Dict[str, Tuple[str, ...]]:
+        """Auto-detect manipulable objects in the scene.
+
+        Returns a dict mapping object keys to name patterns.
+        Excludes robot, gripper, floor, mount, and world bodies.
+        """
+        excluded_patterns = (
+            "world", "floor", "robot", "gripper", "mount",
+            "base", "link", "hand", "finger", "eef"
+        )
+
+        object_patterns = {}
+        for body_name in self.body_names:
+            # Skip if body name contains any excluded pattern
+            if any(pat in body_name.lower() for pat in excluded_patterns):
+                continue
+
+            # Extract a clean key from the body name
+            # e.g., "alphabet_soup_1_main" -> "alphabet_soup"
+            clean_name = body_name.lower()
+            # Remove common suffixes
+            for suffix in ("_main", "_1", "_2", "_3", "_4", "_5", "_base", "_body"):
+                clean_name = clean_name.replace(suffix, "")
+
+            # Use the clean name as the key and the full body name as the pattern
+            key = clean_name.strip("_")
+            if key and key not in object_patterns:
+                object_patterns[key] = (body_name,)
+
+        return object_patterns
 
     # ------------------------------------------------------------------
     # Public API

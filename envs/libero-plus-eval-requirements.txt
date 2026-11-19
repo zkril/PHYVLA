@@ -1,0 +1,6 @@
+# Python 3.9 evaluation overlay. Install cmake<4 before this file.
+# Keep the existing torch / torchvision build; policy serving uses starVLA.
+-r ../thirdparty/starVLA/examples/simBenchmarks/LIBERO-plus/eval_files/libero_plus_requirements.txt
+-r ../thirdparty/LIBERO-plus/extra_requirements.txt
+numpy==1.24.4
+opencv-python==4.6.0.66

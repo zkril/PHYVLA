@@ -11,6 +11,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -47,6 +48,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--token-dim",   type=int, default=256)
     p.add_argument("--batch-size",  type=int, default=32)
     p.add_argument("--device",      type=str, default="cpu")
+    p.add_argument("--tokenizer-checkpoint", type=Path, required=True)
     return p.parse_args()
 
 
@@ -83,18 +85,18 @@ def _verify(tokens: np.ndarray, tokenizer: PhysicalTokenizer,
         # first object token: param decode
         pred_params  = tokenizer.decode_obj_params(z_phy, 0).cpu().numpy()
         true_cont    = batch["obj_cont"][:, 0].cpu().numpy()
-        # params are indices 9:16 in OBJ_CONT_DIM (mass[1]+inertia[3]+friction[3])
+        # params are indices 15:22 in OBJ_CONT_DIM (mass[1]+inertia[3]+friction[3])
         rmse_params  = float(np.sqrt(np.mean(
-            (pred_params - true_cont[:, 9:16])**2
+            (pred_params - true_cont[:, 15:22])**2
         )))
 
-    print("\n[verify] Decoder-head check (untrained — expect random/high error):")
+    print("\n[verify] Decoder-head reconstruction check:")
     print(f"  z_robot  reconstruction RMSE : {rmse_robot:.4f}")
     print(f"  z_contact relation logits    : {rel_logits.shape}")
     print(f"  z_afford phase accuracy      : {phase_acc:.3f}  (random={1/8:.3f})")
     print(f"  z_obj[0] role accuracy       : {role_acc:.3f}  (random={1/5:.3f})")
     print(f"  z_obj[0] param RMSE          : {rmse_params:.4f}")
-    print("  [note] high error expected before training]")
+
 
 
 def main() -> None:
@@ -120,6 +122,10 @@ def main() -> None:
         token_dim=args.token_dim,
         max_n_objects=MAX_N_OBJECTS,
     ).to(device)
+    saved = torch.load(args.tokenizer_checkpoint, map_location="cpu", weights_only=True)
+    if saved.get("feature_schema") != "teacher_forcing_v1":
+        raise ValueError("This exporter requires teacher_forcing_v1; use train_online_physics.py for causal exports")
+    tokenizer.load_state_dict(saved["tokenizer_state_dict"], strict=True)
     tokenizer.eval()
 
     loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False)
@@ -153,6 +159,9 @@ def main() -> None:
     )
     summary = {
         "schema_version": "physics-tokens-v2",
+        "tokenizer_checkpoint": str(args.tokenizer_checkpoint.resolve()),
+        "tokenizer_sha256": hashlib.sha256(args.tokenizer_checkpoint.read_bytes()).hexdigest(),
+        "feature_schema": saved["feature_schema"],
         "shape":          list(tokens_arr.shape),
         "token_dim":      args.token_dim,
         "num_base":       NUM_BASE_TOKENS,

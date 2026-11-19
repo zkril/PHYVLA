@@ -52,6 +52,10 @@ def parse_args() -> argparse.Namespace:
                    help="libero_replay env python 路径（用于 P2 XML 提取）")
     p.add_argument("--py-p2",        type=str, default=None,
                    help="phyvla-p2 env python 路径（用于 P2 MJCF 裁减）")
+    p.add_argument("--py-starvla",   type=str, default=None,
+                   help="starVLA env python 路径（用于 train_tokenizer，支持 H100）")
+    p.add_argument("--output-dir",   type=str, default=None,
+                   help="自定义输出目录（默认: outputs/task{id}）")
     p.add_argument("--skip-p2",      action="store_true",
                    help="跳过 P2 步骤（已有 reduced MJCF 时使用）")
     return p.parse_args()
@@ -60,7 +64,12 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args   = parse_args()
     tid    = args.task_id
-    outdir = PROJECT_ROOT / f"outputs/task{tid:02d}"
+
+    # 支持自定义输出目录
+    if args.output_dir:
+        outdir = Path(args.output_dir)
+    else:
+        outdir = PROJECT_ROOT / f"outputs/task{tid:02d}"
     outdir.mkdir(parents=True, exist_ok=True)
 
     # 解析任务语言
@@ -126,19 +135,21 @@ def main() -> None:
          "--input", str(physics_npz), "--output", str(events_npz),
     ])
 
-    # ── P1 step 4: Token 构建 ────────────────────────────────
-    run([py, str(SCRIPTS / "build_offline_tokens.py"),
+    # Train and persist the encoder before exporting tokens from those weights.
+    py_train = args.py_starvla if args.py_starvla else py
+    tokenizer_checkpoint = tokens_npz.with_name("tokenizer_last.pt")
+    run([py_train, str(SCRIPTS / "train_tokenizer.py"),
+         "--physics", str(physics_npz), "--events", str(events_npz),
+         "--stats", str(stats_json), "--language", lang,
+         "--epochs", str(args.epochs), "--device", args.device,
+         "--output", str(tokenizer_checkpoint),
+    ])
+    run([py_train, str(SCRIPTS / "build_offline_tokens.py"),
          "--physics", str(physics_npz), "--events", str(events_npz),
          "--stats", str(stats_json), "--output", str(tokens_npz),
-         "--language", lang,
+         "--language", lang, "--tokenizer-checkpoint", str(tokenizer_checkpoint),
     ])
 
-    # ── P1 step 5: 训练 ──────────────────────────────────────
-    run([py, str(SCRIPTS / "train_tokenizer.py"),
-         "--physics", str(physics_npz), "--events", str(events_npz),
-         "--stats", str(stats_json),
-         "--epochs", str(args.epochs), "--device", args.device,
-    ])
 
 
 if __name__ == "__main__":

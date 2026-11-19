@@ -26,8 +26,8 @@ import torch.nn as nn
 
 # ── 路径 ─────────────────────────────────────────────────────────────────────
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-STARVLA_ROOT = PROJECT_ROOT / "third_party" / "starVLA"
-STARVLA_WS   = Path("/home/jiangnan-luxitech/workspace/starVLA")
+STARVLA_ROOT = PROJECT_ROOT / "thirdparty" / "starVLA"
+STARVLA_WS   = STARVLA_ROOT  # Use local thirdparty directory
 
 for _p in [str(STARVLA_ROOT), str(STARVLA_WS), str(PROJECT_ROOT / "src")]:
     if _p not in sys.path:
@@ -36,27 +36,97 @@ for _p in [str(STARVLA_ROOT), str(STARVLA_WS), str(PROJECT_ROOT / "src")]:
 os.chdir(str(STARVLA_WS))
 
 DEFAULT_CKPT = str(
-    STARVLA_WS / "playground/Pretrained_models/Qwen2.5-VL-GR00T-LIBERO-4in1"
-               / "checkpoints/steps_30000_pytorch_model.pt"
+    STARVLA_WS / "playground/Pretrained_models/StarVLA/Qwen3-VL-OFT-LIBERO-4in1"
+               / "checkpoints/steps_50000_pytorch_model.pt"
 )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 数据加载
-# ─────────────────────────────────────────────────────────────────────────────
+def get_suite_and_local_id(global_task_id: int) -> tuple[str, int]:
+    """将全局任务ID转换为(suite, local_task_id)
 
-def load_task_data(task_id: int, demo_index: int = 0) -> dict | None:
-    """加载单任务的 z_phy + a_VLA + a_gt。"""
-    out_dir = PROJECT_ROOT / f"outputs/task{task_id:02d}"
+    全局ID分配：
+      0-9:   libero_spatial
+      10-19: libero_object
+      20-29: libero_goal
+      30-39: libero_10
+    """
+    if 0 <= global_task_id < 10:
+        return "libero_spatial", global_task_id
+    elif 10 <= global_task_id < 20:
+        return "libero_object", global_task_id - 10
+    elif 20 <= global_task_id < 30:
+        return "libero_goal", global_task_id - 20
+    elif 30 <= global_task_id < 40:
+        return "libero_10", global_task_id - 30
+    else:
+        raise ValueError(f"Invalid global task ID: {global_task_id} (must be 0-39)")
+
+
+def get_libero_task_info(suite: str, task_id: int):
+    """获取LIBERO任务信息，不依赖libero库"""
+
+    # libero_spatial任务语言描述（与实际HDF5文件对应）
+    LIBERO_SPATIAL_TASKS = [
+        "pick up the black bowl between the plate and the ramekin and place it on the plate",
+        "pick up the black bowl from table center and place it on the plate",
+        "pick up the black bowl in the top drawer of the wooden cabinet and place it on the plate",
+        "pick up the black bowl next to the cookie box and place it on the plate",
+        "pick up the black bowl next to the plate and place it on the plate",
+        "pick up the black bowl next to the ramekin and place it on the plate",
+        "pick up the black bowl on the cookie box and place it on the plate",
+        "pick up the black bowl on the ramekin and place it on the plate",
+        "pick up the black bowl on the stove and place it on the plate",
+        "pick up the black bowl on the wooden cabinet and place it on the plate",
+    ]
+
+    if suite == "libero_spatial":
+        lang = LIBERO_SPATIAL_TASKS[task_id]
+        problem_folder = lang.replace(" ", "_")
+        hdf5_path = PROJECT_ROOT / "data" / suite / f"{problem_folder}_demo.hdf5"
+        return lang, hdf5_path
+    else:
+        # 对于其他suite，使用占位语言描述（实际从HDF5读取）
+        hdf5_path = PROJECT_ROOT / "data" / suite / f"task_{task_id}_demo.hdf5"
+        # 尝试通过文件名推断
+        import glob
+        pattern = str(PROJECT_ROOT / "data" / suite / "*_demo.hdf5")
+        files = sorted(glob.glob(pattern))
+        if task_id < len(files):
+            hdf5_path = Path(files[task_id])
+            # 从文件名提取语言描述
+            lang = hdf5_path.stem.replace("_demo", "").replace("_", " ")
+        else:
+            lang = f"{suite} task {task_id}"
+
+        return lang, hdf5_path
+
+
+def load_task_data(task_id: int, demo_index: int = 0, suite: str = "libero_spatial", suite_mode: str = "single") -> dict | None:
+    """加载单任务的 z_phy + a_VLA + a_gt。
+
+    Args:
+        task_id: 如果suite_mode='multi'，这是全局ID(0-39)；否则是suite内的local ID
+        demo_index: demo索引
+        suite: suite名称（仅在suite_mode='single'时使用）
+        suite_mode: 'single'或'multi'
+    """
+    # 解析suite和local task_id
+    if suite_mode == "multi":
+        suite, local_id = get_suite_and_local_id(task_id)
+    else:
+        local_id = task_id
+
+    # Support new folder structure: outputs/libero_spatial/task_0/
+    out_dir = PROJECT_ROOT / "outputs" / suite / f"task_{local_id}"
 
     tokens_npz = out_dir / f"physics_tokens_demo{demo_index}.npz"
     vla_npz    = out_dir / f"vla_actions_demo{demo_index}.npz"
 
     if not tokens_npz.exists():
-        print(f"  ⚠️  task{task_id:02d}: {tokens_npz.name} 不存在，跳过")
+        print(f"  ⚠️  {suite}/task{local_id:02d}: {tokens_npz.name} 不存在，跳过")
         return None
     if not vla_npz.exists():
-        print(f"  ⚠️  task{task_id:02d}: {vla_npz.name} 不存在，请先运行 export_vla_actions.py，跳过")
+        print(f"  ⚠️  {suite}/task{local_id:02d}: {vla_npz.name} 不存在，请先运行 export_vla_actions.py，跳过")
         return None
 
     tok = np.load(str(tokens_npz))
@@ -74,9 +144,11 @@ def load_task_data(task_id: int, demo_index: int = 0) -> dict | None:
     a_gt_ee = vla["a_gt"].astype(np.float32)   # [T, 7]
 
     T = z_phy.shape[0]
-    print(f"  task{task_id:02d}: T={T}  z_phy={z_phy.shape}  a_vla={a_vla_norm.shape}")
+    print(f"  {suite}/task{local_id:02d}: T={T}  z_phy={z_phy.shape}  a_vla={a_vla_norm.shape}")
     return {
-        "task_id": task_id,
+        "task_id": task_id,      # 全局ID（multi模式）或local ID（single模式）
+        "suite": suite,          # suite名称
+        "local_id": local_id,    # suite内的local ID
         "z_phy":   z_phy,        # [T, 23, 256]
         "a_target": a_gt_norm,   # [T, horizon, 7]  归一化
         "a_gt_ee":  a_gt_ee,     # [T, 7]  EE 参考
@@ -111,8 +183,12 @@ def cache_vlm_hidden_from_hdf5(
     demo_index: int = 0,
     device: str = "cuda",
     batch_size: int = 4,
+    suite_mode: str = "single",
 ) -> tuple:
     """从 LIBERO HDF5 提取 obs，一次性缓存 VLM hidden states。
+
+    对齐到 physics_tokens 的长度：如果 HDF5 帧数与 physics tokens 不同，
+    则重复最后一帧或截断，确保数据一致性。
 
     Returns:
         h_cache:  [T, L, H]  float16（CPU）
@@ -123,35 +199,61 @@ def cache_vlm_hidden_from_hdf5(
     from starVLA.model.framework.share_tools import dict_to_namespace
     from deployment.model_server.tools.image_tools import to_pil_preserve
 
-    out_dir = PROJECT_ROOT / f"outputs/task{task_id:02d}"
+    # 解析suite和local task_id
+    if suite_mode == "multi":
+        suite, local_id = get_suite_and_local_id(task_id)
+    else:
+        local_id = task_id
+
+    out_dir = PROJECT_ROOT / "outputs" / suite / f"task_{local_id}"
     cache_path = out_dir / f"vlm_hidden_demo{demo_index}.npz"
 
-    # 如果已缓存则直接加载
+    # 读取 physics_tokens 的长度作为目标长度
+    tok_path = out_dir / f"physics_tokens_demo{demo_index}.npz"
+    if not tok_path.exists():
+        raise FileNotFoundError(f"Physics tokens not found: {tok_path}")
+
+    tok_data = np.load(str(tok_path))
+    target_T = tok_data["tokens"].shape[0]
+
+    # 如果已缓存则检查长度是否匹配
     if cache_path.exists():
-        print(f"  [缓存] task{task_id:02d} VLM hidden states 已存在，直接加载")
         d = np.load(str(cache_path))
-        h = torch.from_numpy(d["h"])
-        m = torch.from_numpy(d["m"]) if "m" in d and d["m"] is not None else None
-        return h, m
+        cached_T = d["h"].shape[0]
+        if cached_T == target_T:
+            print(f"  [缓存] {suite}/task{local_id:02d} VLM hidden states 已存在，直接加载 (T={target_T})")
+            h = torch.from_numpy(d["h"])
+            m = torch.from_numpy(d["m"]) if "m" in d and d["m"] is not None else None
+            return h, m
+        else:
+            print(f"  [缓存] {suite}/task{local_id:02d} VLM hidden states 长度不匹配 (cached={cached_T}, need={target_T})，重新生成...")
 
     # 读取 HDF5
-    from libero.libero import benchmark, get_libero_path
-    bd = benchmark.get_benchmark_dict()
-    suite_obj = bd[suite]()
-    task = suite_obj.get_task(task_id)
-    lang = task.language
-    hdf5_path = (
-        Path(get_libero_path("datasets")) / suite
-        / f"{task.problem_folder}.hdf5"
-    )
+    lang, hdf5_path = get_libero_task_info(suite, local_id)
+
+    if not hdf5_path.exists():
+        raise FileNotFoundError(f"HDF5 file not found: {hdf5_path}")
 
     with h5py.File(str(hdf5_path), "r") as f:
-        imgs  = f[f"data/demo_{demo_index}/obs/agentview_image"][:]
-        jpos  = f[f"data/demo_{demo_index}/obs/robot0_joint_pos"][:].astype(np.float32)
+        imgs  = f[f"data/demo_{demo_index}/obs/agentview_rgb"][:]
+        jpos  = f[f"data/demo_{demo_index}/obs/joint_states"][:].astype(np.float32)
 
-    T = len(imgs)
-    print(f"  [缓存] task{task_id:02d} 缓存 VLM hidden states，T={T}...")
+    hdf5_T = len(imgs)
+    print(f"  [缓存] {suite}/task{local_id:02d} 缓存 VLM hidden states，HDF5_T={hdf5_T}, target_T={target_T}...")
 
+    # 对齐数据长度
+    if hdf5_T < target_T:
+        # HDF5数据不够，重复最后一帧
+        print(f"    警告：HDF5帧数({hdf5_T}) < physics tokens({target_T})，重复最后一帧")
+        imgs = np.concatenate([imgs, np.tile(imgs[-1:], (target_T - hdf5_T, 1, 1, 1))], axis=0)
+        jpos = np.concatenate([jpos, np.tile(jpos[-1:], (target_T - hdf5_T, 1))], axis=0)
+    elif hdf5_T > target_T:
+        # HDF5数据太多，截断
+        print(f"    警告：HDF5帧数({hdf5_T}) > physics tokens({target_T})，截断")
+        imgs = imgs[:target_T]
+        jpos = jpos[:target_T]
+
+    T = target_T
     h_list, m_list = [], []
 
     for start in range(0, T, batch_size):
@@ -249,7 +351,7 @@ def train(args) -> None:
     # ── 加载数据 ───────────────────────────────────────────────────────────
     task_data_list = []
     for tid in args.task_ids:
-        td = load_task_data(tid, args.demo_index)
+        td = load_task_data(tid, args.demo_index, args.suite, args.suite_mode)
         if td is not None:
             task_data_list.append(td)
 
@@ -268,17 +370,41 @@ def train(args) -> None:
     # ── 预缓存 VLM hidden states ─────────────────────────────────────────
     print(f"\n[P5-3] 预缓存 VLM 隐状态（VLM 冻结，只需一次）...")
     h_caches, m_caches = [], []
+    max_seq_len = 0
     for td in task_data_list:
         h, m = cache_vlm_hidden_from_hdf5(
             wrapper, td["task_id"],
+            suite=td["suite"],
             demo_index=args.demo_index, device=device,
+            suite_mode=args.suite_mode,
         )
         h_caches.append(h)
         m_caches.append(m)
+        max_seq_len = max(max_seq_len, h.shape[1])
 
-    h_all = torch.cat(h_caches, dim=0)            # [N, L, H]
-    m_all = (torch.cat(m_caches, dim=0)
+    # Pad sequences to same length
+    h_padded = []
+    m_padded = []
+    for h, m in zip(h_caches, m_caches):
+        T, L, H = h.shape
+        if L < max_seq_len:
+            # Pad with zeros
+            pad = torch.zeros(T, max_seq_len - L, H, dtype=h.dtype, device=h.device)
+            h = torch.cat([h, pad], dim=1)
+        h_padded.append(h)
+
+        if m is not None:
+            T, L = m.shape
+            if L < max_seq_len:
+                pad = torch.zeros(T, max_seq_len - L, dtype=m.dtype, device=m.device)
+                m = torch.cat([m, pad], dim=1)
+            m_padded.append(m)
+
+    h_all = torch.cat(h_padded, dim=0)            # [N, max_L, H]
+    m_all = (torch.cat(m_padded, dim=0)
              if m_caches[0] is not None else None)
+
+    print(f"  VLM hidden states: shape={h_all.shape}, max_seq_len={max_seq_len}")
 
     # ── 合并训练数据 ──────────────────────────────────────────────────────
     dataset = build_dataset(task_data_list, action_horizon)
@@ -337,7 +463,11 @@ def train(args) -> None:
 
         if ep_loss < best_loss:
             best_loss = ep_loss
-            ckpt_save = out_dir / "projector_best.pt"
+            # 根据suite_mode选择checkpoint名称
+            if args.suite_mode == "multi":
+                ckpt_save = out_dir / "projector_40tasks_best.pt"
+            else:
+                ckpt_save = out_dir / "projector_best.pt"
             wrapper.save_projector(ckpt_save)
 
     # ── 物理敏感性验收 ────────────────────────────────────────────────────
@@ -373,12 +503,14 @@ def train(args) -> None:
         "n_trainable":    n_trainable,
         "sensitivity":    sens_results,
         "task_ids":       args.task_ids,
+        "suite_mode":     args.suite_mode,
         "all_pass":       all_pass,
     }
-    (out_dir / "p5_summary.json").write_text(
+    summary_name = "p5_40tasks_summary.json" if args.suite_mode == "multi" else "p5_summary.json"
+    (out_dir / summary_name).write_text(
         json.dumps(summary, indent=2, default=str)
     )
-    print(f"\n摘要已保存：{out_dir}/p5_summary.json")
+    print(f"\n摘要已保存：{out_dir}/{summary_name}")
 
 
 def parse_args() -> argparse.Namespace:
@@ -392,7 +524,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--device",            default="cuda")
     p.add_argument("--freeze-action-head", action="store_true",
                    help="仅训练 projector，冻结 DiT action head")
-    p.add_argument("--suite",             default="libero_spatial")
+    p.add_argument("--suite",             default="libero_spatial",
+                   help="Suite名称（仅在suite-mode=single时使用）")
+    p.add_argument("--suite-mode",        default="single", choices=["single", "multi"],
+                   help="single=单suite模式；multi=多suite模式（task-ids为全局ID 0-39）")
     return p.parse_args()
 
 

@@ -13,6 +13,8 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
+import random
 import sys
 from pathlib import Path
 
@@ -52,6 +54,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--token-dim",  type=int, default=256)
     p.add_argument("--device",     type=str, default="cpu")
     p.add_argument("--log-every",  type=int, default=50)
+    p.add_argument("--language", default=LIBERO_TASK02_LANGUAGE)
+    p.add_argument("--seed", type=int, default=7)
+    p.add_argument("--output", type=Path, default=Path("outputs/tokenizer/tokenizer_last.pt"))
     return p.parse_args()
 
 
@@ -83,7 +88,7 @@ def compute_loss(
     # Use max of relation flags across valid contacts as target
     contacts = batch_dev["contacts"]          # [B, C, 28]
     cmask    = batch_dev["contact_mask"] > 0.5
-    rel_target = (contacts[:, :, 21:28].max(dim=1).values > 0.5).float()
+    rel_target = (contacts[:, :, 21:28].masked_fill(~cmask.unsqueeze(-1), 0).max(dim=1).values > 0.5).float()
     rel_pred   = tokenizer.decode_contact_relations(z_phy)
     losses["contact_bce"] = F.binary_cross_entropy_with_logits(rel_pred, rel_target)
 
@@ -113,10 +118,10 @@ def compute_loss(
             F.mse_loss(pred_pose[valid], obj_cont[valid, i, :9])
         )
 
-        # param regression (mass[1]+inertia[3]+friction[3] = indices 9:16)
+        # param regression (mass[1]+inertia[3]+friction[3] = indices 15:22)
         pred_param = tokenizer.decode_obj_params(z_phy, idx)
         param_loss_list.append(
-            F.mse_loss(pred_param[valid], obj_cont[valid, i, 9:16])
+            F.mse_loss(pred_param[valid], obj_cont[valid, i, 15:22])
         )
 
     if role_loss_list:
@@ -169,7 +174,7 @@ def evaluate(tokenizer: PhysicalTokenizer, loader: DataLoader, device: str) -> d
 
         # contact relation F1 (macro, 7 flags)
         contacts = bd["contacts"]
-        rel_tgt  = (contacts[:, :, 21:28].max(dim=1).values > 0.5).float().cpu().numpy()
+        rel_tgt  = ((contacts[:, :, 21:28] * bd["contact_mask"].unsqueeze(-1)).max(dim=1).values > 0.5).float().cpu().numpy()
         rel_pred = (tokenizer.decode_contact_relations(z_phy).sigmoid() > 0.5).cpu().numpy()
         tp = (rel_pred * rel_tgt).sum()
         fp = (rel_pred * (1 - rel_tgt)).sum()
@@ -186,7 +191,7 @@ def evaluate(tokenizer: PhysicalTokenizer, loader: DataLoader, device: str) -> d
             metrics["obj0_role_acc"].append(float((pred_role[valid] == obj_roles[valid, 0]).mean()))
 
             pred_par = tokenizer.decode_obj_params(z_phy, 0).cpu().numpy()
-            true_par = obj_cont[:, 0, 9:16]
+            true_par = obj_cont[:, 0, 15:22]
             metrics["obj0_param_rmse"].append(float(np.sqrt(np.mean((pred_par[valid] - true_par[valid])**2))))
 
             pred_pos = tokenizer.decode_obj_pose(z_phy, 0).cpu().numpy()
@@ -202,6 +207,7 @@ def evaluate(tokenizer: PhysicalTokenizer, loader: DataLoader, device: str) -> d
 
 def main() -> None:
     args   = parse_args()
+    random.seed(args.seed); np.random.seed(args.seed); torch.manual_seed(args.seed)
     device = args.device
     stats  = args.stats if args.stats.exists() else None
 
@@ -213,7 +219,7 @@ def main() -> None:
 
     dataset = PhysicsDataset(
         args.physics, args.events,
-        task_language=LIBERO_TASK02_LANGUAGE,
+        task_language=args.language,
         stats_path=stats,
         rollout_path=rollout_path,
     )
@@ -251,6 +257,20 @@ def main() -> None:
                 f"obj0_param_rmse={m['obj0_param_rmse']:.4f} | "
                 f"contact_f1={m['contact_rel_f1']:.3f}"
             )
+
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "tokenizer_state_dict": tokenizer.state_dict(),
+        "feature_schema": "rollout_v1" if rollout_path else "teacher_forcing_v1",
+        "tokenizer_config": {"token_dim": args.token_dim, "max_n_objects": MAX_N_OBJECTS},
+        "seed": args.seed, "epochs": args.epochs, "language": args.language,
+        "optimizer_state_dict": optimizer.state_dict(), "scheduler_state_dict": scheduler.state_dict(),
+        "metrics_scope": "training_set_only",
+    }
+    temporary = args.output.with_suffix(".tmp")
+    torch.save(payload, temporary)
+    temporary.replace(args.output)
+    print(f"Saved tokenizer checkpoint: {args.output}")
 
     print("\n" + "=" * 60)
     print("FINAL METRICS vs ACCEPTANCE CRITERIA")

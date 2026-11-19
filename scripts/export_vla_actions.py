@@ -22,8 +22,8 @@ from PIL import Image
 
 # ── 路径设置 ──────────────────────────────────────────────────────────────────
 PROJECT_ROOT  = Path(__file__).resolve().parents[1]
-STARVLA_ROOT  = PROJECT_ROOT / "third_party" / "starVLA"
-STARVLA_WS    = Path("/home/jiangnan-luxitech/workspace/starVLA")
+STARVLA_ROOT  = PROJECT_ROOT / "thirdparty" / "starVLA"
+STARVLA_WS    = STARVLA_ROOT  # Use local thirdparty directory
 
 for _p in [str(STARVLA_ROOT), str(STARVLA_WS), str(PROJECT_ROOT / "src")]:
     if _p not in sys.path:
@@ -34,46 +34,56 @@ os.chdir(str(STARVLA_WS))
 
 # ── 默认 checkpoint 路径 ──────────────────────────────────────────────────────
 DEFAULT_CKPT = str(
-    STARVLA_WS / "playground/Pretrained_models/Qwen2.5-VL-GR00T-LIBERO-4in1"
-               / "checkpoints/steps_30000_pytorch_model.pt"
+    STARVLA_WS / "playground/Pretrained_models/StarVLA/Qwen3-VL-OFT-LIBERO-4in1"
+               / "checkpoints/steps_50000_pytorch_model.pt"
 )
 SUITE  = "libero_spatial"
 DEVICE = "cuda"
 
 
-def get_libero_hdf5_path(suite: str, task_id: int) -> Path:
-    """从 LIBERO 库解析 HDF5 路径。"""
-    # 切换回 phyvla 以运行 LIBERO 相关代码
-    orig_dir = os.getcwd()
-    os.chdir(str(STARVLA_WS))
-    try:
-        from libero.libero import benchmark, get_libero_path
-        bd    = benchmark.get_benchmark_dict()
-        suite_obj = bd[suite]()
-        task  = suite_obj.get_task(task_id)
-        demo_path = (
-            Path(get_libero_path("datasets")) / suite
-            / f"{task.problem_folder}.hdf5"
-        )
-        return demo_path, task.language
-    finally:
-        os.chdir(orig_dir)
+def get_libero_hdf5_path(suite: str, task_id: int) -> tuple[Path, str]:
+    """从已有的physics JSON文件读取HDF5路径和任务描述。
+
+    这样starVLA环境不需要安装libero库。
+    """
+    # 尝试从已生成的physics JSON中读取信息
+    physics_json = PROJECT_ROOT / "outputs" / suite / f"task_{task_id}" / f"task{task_id:02d}_demo00_physics.json"
+
+    if physics_json.exists():
+        import json
+        with open(physics_json, "r") as f:
+            meta = json.load(f)
+        demo_path = Path(meta["demo_path"])
+        task_lang = meta["language"]
+        return demo_path, task_lang
+
+    # 备用方案：直接扫描data目录
+    data_dir = PROJECT_ROOT / "data" / suite
+    hdf5_files = sorted(data_dir.glob("*.hdf5"))
+
+    if task_id < len(hdf5_files):
+        demo_path = hdf5_files[task_id]
+        # 从文件名推断任务描述
+        task_name = demo_path.stem.replace("_demo", "").replace("_", " ")
+        return demo_path, task_name
+
+    raise FileNotFoundError(f"无法找到 {suite} task_id={task_id} 的HDF5文件")
 
 
 def load_demo_frames(hdf5_path: Path, demo_index: int = 0) -> dict:
     """从 LIBERO HDF5 读取单个 demo 的 obs 和动作。
 
     Returns dict:
-        "images"      : [T, H, W, 3] uint8   agentview_image
-        "joint_pos"   : [T, 7] float32        robot0_joint_pos（stata_dim=7）
+        "images"      : [T, H, W, 3] uint8   agentview_rgb
+        "joint_pos"   : [T, 7] float32        joint_states
         "actions"     : [T, 7] float32        专家动作（7D EE，用于参考）
         "T"           : int
     """
     key = f"data/demo_{demo_index}"
     with h5py.File(str(hdf5_path), "r") as f:
         obs   = f[f"{key}/obs"]
-        imgs  = obs["agentview_image"][:]             # [T, H, W, 3]
-        jpos  = obs["robot0_joint_pos"][:].astype(np.float32)  # [T, 7]
+        imgs  = obs["agentview_rgb"][:]             # [T, H, W, 3]
+        jpos  = obs["joint_states"][:].astype(np.float32)  # [T, 7]
         acts  = f[f"{key}/actions"][:].astype(np.float32)       # [T, 7]
     return {"images": imgs, "joint_pos": jpos, "actions": acts, "T": len(imgs)}
 
@@ -87,7 +97,8 @@ def export_task(
     batch_size: int   = 4,
 ) -> Path:
     """导出单任务的 StarVLA 动作预测，返回保存路径。"""
-    out_dir  = PROJECT_ROOT / f"outputs/task{task_id:02d}"
+    # Support new folder structure: outputs/libero_spatial/task_0/
+    out_dir  = PROJECT_ROOT / "outputs" / suite / f"task_{task_id}"
     out_path = out_dir / f"vla_actions_demo{demo_index}.npz"
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -118,11 +129,11 @@ def export_task(
         examples = []
         for idx in indices:
             img  = Image.fromarray(demo["images"][idx])
-            jpos = demo["joint_pos"][idx].tolist()
             examples.append({
                 "image": [img],
                 "lang":  task_lang,
-                "state": np.array(jpos, dtype=np.float32),
+                # Skip state for now - StarVLA seems to have a bug with state processing
+                # "state": demo["joint_pos"][idx],
             })
 
         with torch.inference_mode():
